@@ -1,19 +1,17 @@
 # Key2 Toolbox
 
-A small root app for the BlackBerry Key2 (FolkPatch/APatch, LineageOS 22.2,
-4.19 kernel) that bundles three previously-separate tweaks into one toggle UI:
+A root app for the BlackBerry Key2 (FolkPatch/APatch, LineageOS 22.2, 4.19
+kernel) that bundles five previously-separate tweaks into one toggle UI:
 
 - **Convenience key → Ctrl** remap (`stmpe.kl` key 110)
-- **ZRAM size** (Off / 2GB / 3GB / 4GB)
+- **ZRAM** compression algorithm + size (Off / 2GB / 3GB / 4GB)
 - **Adaptive keyboard backlight** daemon
+- **Persistent wireless ADB** on a user-chosen static port
+- **Double-Tap to Wake** (DT2W)
 
-## Opening in Android Studio
-
-1. Open this folder (`Key2Toolbox/`) as an existing project.
-2. Let Gradle sync. It uses AGP 8.5.2 / Kotlin 1.9.24 / Compose BOM
-   2024.09.00 / libsu 5.2.2 - bump via Studio's upgrade assistant if you're on
-   a newer Studio that complains.
-3. Build & run with `minSdk 28` / `targetSdk 35` (matches LOS 22.2 / SDK 35).
+Each module lives on its own screen, navigated from a home menu. Persistence
+is handled per-module by installing a script to `/data/adb/service.d/`; most
+modules also support applying changes immediately without a reboot.
 
 ## Signing with your existing keystore
 
@@ -36,19 +34,52 @@ the build script.
   live, separately from whether the boot script is installed.
 
 ### ZRAM (`ZramController`)
-- **Persist**: installs `assets/zram_template.sh` (with `__SIZE_MB__`
-  substituted) to `/data/adb/service.d/zram_size.sh`. Selecting "Off" removes
-  the script.
+- **Compression algorithm**: read dynamically from
+  `/sys/block/zram0/comp_algorithm`, so the screen only offers algorithms
+  this kernel actually supports (confirmed: `lzo`, `lz4`, `zstd`, `deflate`).
+- **Size**: Off / 2GB / 3GB / 4GB.
+- **Persist**: installs `assets/zram_template.sh` (with `__ALGO__` and
+  `__SIZE_MB__` substituted) to `/data/adb/service.d/zram_size.sh`. Selecting
+  "Off" removes the script.
 - **Live apply** (behind a confirmation dialog): `swapoff` → reset → set
-  `disksize` → `mkswap` → `swapon`. This briefly disables swap and can cause
-  background apps to be killed - the dialog warns about this, default is
-  reboot-to-apply.
+  `comp_algorithm` → set `disksize` → `mkswap` → `swapon`. This briefly
+  disables swap and can cause background apps to be killed - the dialog
+  warns about this, default is reboot-to-apply.
 
 ### Keyboard backlight (`KbdLightController`)
 - This script is a persistent loop, not a one-shot config, so "enabled" =
   install `assets/kbd_light.sh` to `service.d` for next boot, **and**
   optionally launch it right now (`nohup sh ... &`) / kill it
   (`pkill -f kbd_light.sh`) so you don't need to reboot to test.
+
+### Wireless ADB (`WirelessAdbController`)
+- User enters a port; **persist** installs `assets/adb_wireless_template.sh`
+  (with `__PORT__` substituted) to `/data/adb/service.d/adb_wireless.sh`,
+  which sets `adb_wifi_enabled` and pins `persist.adb.tcp.port` /
+  `service.adb.tcp.port` at boot.
+- **Live apply** sets the same properties immediately.
+- The screen also shows the device's current WLAN IP (via `ip route get`,
+  checked against a `wlan*`-named interface so it doesn't report a cellular
+  IP when WiFi is down) and the live port, so you can confirm the
+  `adb connect <ip>:<port>` target at a glance.
+- If you previously had a separate static-port script, remove it once this
+  module's persistence is confirmed working, so two boot scripts aren't
+  racing to set the same property.
+
+### Double-Tap to Wake (`Dt2wController`)
+- Toggles the `wake_gesture` sysfs node on the main touchscreen
+  (`synaptics_dsx_2.7`, I2C 4-0070).
+- Must be applied while the screen is **on** - the driver only picks up the
+  gesture-mode setting as part of its normal suspend sequence, so enabling
+  it with the screen already off won't take effect until the next time the
+  screen turns on and back off.
+- **Persist**: installs `assets/dt2w.sh` to `/data/adb/service.d/`, which
+  sleeps briefly after boot (screen is assumed on) then re-applies the write,
+  since the value doesn't survive reboot on its own.
+- If the live state doesn't actually change after toggling, this may be the
+  unresolved driver/HAL-level issue from earlier debugging (sysfs write
+  appears to succeed but the gesture doesn't engage) rather than a bug in
+  the app itself.
 
 ## ⚠ Known risk: writing to `/data/adb/service.d/` from the app
 
@@ -61,7 +92,7 @@ that originally created files there (the initial `adb shell` session at
 setup time) and any shell spawned afterwards.
 
 This app's root shell (via `libsu`) is yet another shell context, spawned at
-app-runtime, so it **may hit the same wall**. Each module's UI shows a
+app-runtime, so it **may hit the same wall**. Each module's screen shows a
 "Persisted: Yes/No" status that's read back from disk after every write, so
 you'll see immediately if a persist operation silently failed.
 
@@ -83,7 +114,10 @@ you'll see immediately if a persist operation silently failed.
 ## Extending
 
 - Add new modules as `core`-style controllers in `modules/`, following the
-  pattern of `CtrlKeyController` / `ZramController` / `KbdLightController`
-  (persist via `AssetInstaller`, live-apply via `RootShell.run`).
-- Add a corresponding card composable in `ui/HomeScreen.kt`.
+  pattern of `CtrlKeyController` / `ZramController` / `KbdLightController` /
+  `WirelessAdbController` / `Dt2wController` (persist via `AssetInstaller`,
+  live-apply via `RootShell.run`).
+- Add a corresponding screen in `ui/` (following e.g. `CtrlKeyScreen.kt`,
+  built on the shared `ScreenScaffold`), and wire it into the navigation
+  host and home menu in `ui/HomeScreen.kt` and `ui/Screen.kt`.
 - Drop any new boot scripts in `app/src/main/assets/`.
