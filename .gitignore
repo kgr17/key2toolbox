@@ -1,0 +1,32 @@
+# Gradle
+.gradle/
+build/
+/captures
+.cxx/
+*.apk
+*.aab
+
+# Local config (contains your machine-specific SDK path)
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+.navigation/
+
+# macOS
+.DS_Store
+
+# Signing - NEVER commit these
+*.keystore
+*.jks
+keystore.properties
+
+# Logs
+*.log
+
+# Generated
+/app/release/
+/app/debug/
