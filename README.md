@@ -1,17 +1,31 @@
 # Key2 Toolbox
 
 A root app for the BlackBerry Key2 (FolkPatch/APatch, LineageOS 22.2, 4.19
-kernel) that bundles five previously-separate tweaks into one toggle UI:
+kernel) that bundles eight previously-separate tweaks into one toggle UI:
 
 - **Convenience key → Ctrl** remap (`stmpe.kl` key 110)
 - **ZRAM** compression algorithm + size (Off / 2GB / 3GB / 4GB)
 - **Adaptive keyboard backlight** daemon
 - **Persistent wireless ADB** on a user-chosen static port
 - **Double-Tap to Wake** (DT2W)
+- **Keyboard Nav Lock** - stops accidental Back/Home/Recents while typing
+- **Lockscreen PIN on Keyboard** - type your PIN on the physical keyboard
+- **Audio FX** - system-wide EQ, bass boost, and loudness, auto-profiled by output
 
-Each module lives on its own screen, navigated from a home menu. Persistence
-is handled per-module by installing a script to `/data/adb/service.d/`; most
-modules also support applying changes immediately without a reboot.
+Each module lives on its own screen, navigated from a home menu. The first
+five are stateless: they fire root commands on demand and persist by
+installing a script to `/data/adb/service.d/`. The last three (ported from
+[nozerorma/key2-tweaks](https://github.com/nozerorma/key2-tweaks)) are
+different in kind - they depend on a long-lived `Key2AccessibilityService`
+that watches for IME visibility, intercepts physical key events, and tracks
+audio sessions, since none of that is observable from a one-shot root
+command. Settings for these three are stored in their own SharedPreferences
+file (`key2tweaks`) rather than going through `AssetInstaller`.
+
+The three accessibility-service modules only work once **Key2 Toolbox** is
+enabled under Settings → Accessibility - each of their screens shows a
+banner with a direct link there if it isn't. Reinstalling the app resets
+this, so it needs re-enabling after every fresh install.
 
 ## Signing with your existing keystore
 
@@ -81,6 +95,67 @@ the build script.
   appears to succeed but the gesture doesn't engage) rather than a bug in
   the app itself.
 
+### Keyboard Nav Lock (`Key2AccessibilityService`)
+Ported from nozerorma/key2-tweaks. Stops accidental Back / Home / Recents
+presses while the on-screen keyboard (IME) is visible. Three independent
+toggles, all stored as booleans in the `key2tweaks` SharedPreferences file:
+- **Keyboard Nav Lock** (`nav_lock_enabled`): master switch for the
+  disable-while-typing behavior.
+- **Double-tap Back** (`nav_gesture_mode`, no root): keeps the buttons live;
+  the service gates `KEYCODE_BACK` in `onKeyEvent` so a single tap is
+  swallowed and only a double-tap (within 300ms, and only if the tap was
+  shorter than a 350ms long-press) fires it. Home/Recents can't be gated
+  this way - Android's window policy acts on them regardless of what an
+  accessibility service consumes.
+- **Disable nav buttons ALWAYS** (`nav_always_off`, root): permanently cuts
+  all three capacitive buttons via the sysfs node
+  `/sys/class/input/eventN/device/0dbutton` (`1`=on, `0`=off), resolved by
+  device name (`synaptics_dsx_2`) each time rather than a fixed event
+  number, so it survives reboots even if the event index shifts. The root
+  write goes through `RootShell` (a `for` loop over `/sys/class/input/event*`
+  in one shell invocation, matching the FolkPatch one-command-per-`-c` quirk
+  already documented for the other modules).
+
+The service recomputes the desired button state (`reconcileNav()`) whenever
+an accessibility event fires or any of the three prefs change, and always
+re-enables the buttons in `onUnbind`/`onDestroy` so a crash or disable never
+leaves them stuck off.
+
+### Lockscreen PIN on Keyboard (`Key2AccessibilityService`)
+Ported from nozerorma/key2-tweaks. No root needed. While the keyguard is
+locked, maps physical key presses to taps on SystemUI's PIN pad via
+`AccessibilityNodeInfo`, so the PIN can be entered on the hardware keyboard
+instead of the touchscreen. Digits map phone-dialpad style onto QWERTY:
+`W E R` = `1 2 3`, `S D F` = `4 5 6`, `Z X C` = `7 8 9`, `Q` = `0` (number
+row and numpad keys also work directly). Enter/D-pad-center confirms,
+Delete/Backspace deletes. Button lookup tries known SystemUI view IDs first
+(`key0`-`key9`, `delete_button`, `key_enter`, etc.) and falls back to a
+recursive node search by visible text or content description if those IDs
+don't match on this build.
+
+### Audio FX (`AudioFx`, hosted inside `Key2AccessibilityService`)
+Ported from nozerorma/key2-tweaks. System-wide `Equalizer` + `BassBoost` +
+`LoudnessEnhancer` chain, no root required for the EQ itself. Effects are
+attached per audio session (tracked via the
+`OPEN/CLOSE_AUDIO_EFFECT_CONTROL_SESSION` broadcasts, plus a session-0
+fallback) rather than only the global mix, since per-session attachment is
+what actually processes playback on this Qualcomm ROM. Four tuning profiles
+- `spk` (speaker), `wired`, `bt` (Bluetooth A2DP), `usb` - auto-selected by
+the currently active output (`AudioFx.profileFor`, checked via
+`AudioDeviceCallback` so it re-evaluates whenever the output changes) with
+separate recommended-default EQ curves, bass, and loudness per profile.
+Hosted inside the accessibility service rather than its own service so it
+gets a long-lived process without a separate foreground-service
+notification.
+
+**LineageOS AudioFX conflict**: two effect engines fighting over the same
+audio sessions cancel or muddy each other, so `org.lineageos.audiofx` needs
+to be disabled for this module's EQ to actually take effect cleanly. The
+screen shows its install/enabled status and a button to toggle it via
+`pm disable-user --user 0` / `pm enable`, run through `RootShell` - this is
+the only part of Audio FX that needs root. Turning the master Audio FX
+toggle on also auto-disables LineageOS AudioFX if it's currently enabled.
+
 ## ⚠ Known risk: writing to `/data/adb/service.d/` from the app
 
 In a previous session, **every attempt to write to `/data/adb/service.d/`
@@ -113,11 +188,22 @@ you'll see immediately if a persist operation silently failed.
 
 ## Extending
 
-- Add new modules as `core`-style controllers in `modules/`, following the
-  pattern of `CtrlKeyController` / `ZramController` / `KbdLightController` /
-  `WirelessAdbController` / `Dt2wController` (persist via `AssetInstaller`,
-  live-apply via `RootShell.run`).
-- Add a corresponding screen in `ui/` (following e.g. `CtrlKeyScreen.kt`,
-  built on the shared `ScreenScaffold`), and wire it into the navigation
-  host and home menu in `ui/HomeScreen.kt` and `ui/Screen.kt`.
+- For stateless root-command modules, add a `core`-style controller in
+  `modules/`, following the pattern of `CtrlKeyController` /
+  `ZramController` / `KbdLightController` / `WirelessAdbController` /
+  `Dt2wController` (persist via `AssetInstaller`, live-apply via
+  `RootShell.run`).
+- For features that need to observe ongoing state (window/IME visibility,
+  key events, audio sessions) rather than just fire a command, that
+  observation has to happen inside `Key2AccessibilityService` - root has no
+  API for "tell me when X happens," only for executing commands. Add the
+  logic there (or as a class it hosts, like `AudioFx`), store settings as
+  SharedPreferences booleans/ints in the `key2tweaks` prefs file, and write
+  the corresponding screen to read/write those same keys directly rather
+  than going through `AssetInstaller`.
+- Either way, add a corresponding screen in `ui/` (following e.g.
+  `CtrlKeyScreen.kt` for the simple case or `NavLockScreen.kt` /
+  `AudioFxScreen.kt` for the prefs-based case, all built on the shared
+  `ScreenScaffold`), and wire it into the navigation host and home menu in
+  `ui/HomeScreen.kt` and `ui/Screen.kt`.
 - Drop any new boot scripts in `app/src/main/assets/`.
