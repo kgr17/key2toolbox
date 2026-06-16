@@ -7,4 +7,7 @@ sealed class Screen(val title: String) {
     data object KbdLight : Screen("Adaptive Keyboard Backlight")
     data object WirelessAdb : Screen("Persistent Wireless ADB")
     data object Dt2w : Screen("Double-Tap to Wake")
+    data object NavLock : Screen("Keyboard Nav Lock")
+    data object PinKeyboard : Screen("Lockscreen PIN on Keyboard")
+    data object AudioFx : Screen("Audio FX")
 }

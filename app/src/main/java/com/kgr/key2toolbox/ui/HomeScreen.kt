@@ -48,6 +48,9 @@ fun HomeScreen() {
         Screen.KbdLight -> KbdLightScreen(onBack = { currentScreen = Screen.Home })
         Screen.WirelessAdb -> WirelessAdbScreen(onBack = { currentScreen = Screen.Home })
         Screen.Dt2w -> Dt2wScreen(onBack = { currentScreen = Screen.Home })
+        Screen.NavLock -> NavLockScreen(onBack = { currentScreen = Screen.Home })
+        Screen.PinKeyboard -> PinKeyboardScreen(onBack = { currentScreen = Screen.Home })
+        Screen.AudioFx -> AudioFxScreen(onBack = { currentScreen = Screen.Home })
     }
 }
 
@@ -69,7 +72,7 @@ private fun HomeMenu(onNavigate: (Screen) -> Unit) {
             .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text("Key2 Toolbox", style = MaterialTheme.typography.headlineMedium)
 
@@ -92,6 +95,9 @@ private fun HomeMenu(onNavigate: (Screen) -> Unit) {
         MenuEntry(Screen.KbdLight.title) { onNavigate(Screen.KbdLight) }
         MenuEntry(Screen.WirelessAdb.title) { onNavigate(Screen.WirelessAdb) }
         MenuEntry(Screen.Dt2w.title) { onNavigate(Screen.Dt2w) }
+        MenuEntry(Screen.NavLock.title) { onNavigate(Screen.NavLock) }
+        MenuEntry(Screen.PinKeyboard.title) { onNavigate(Screen.PinKeyboard) }
+        MenuEntry(Screen.AudioFx.title) { onNavigate(Screen.AudioFx) }
     }
 }
 
@@ -102,7 +108,7 @@ private fun MenuEntry(title: String, onClick: () -> Unit) {
             .fillMaxWidth()
             .clickable(onClick = onClick)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
         }
     }
