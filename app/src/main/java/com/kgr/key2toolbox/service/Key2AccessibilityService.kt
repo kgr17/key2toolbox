@@ -78,11 +78,40 @@ class Key2AccessibilityService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
             serviceInfo = info
         }
-        reconcileNav() // apply the configured nav state on connect
+
+        // Seed navDisabled from the real kernel state rather than assuming
+        // false - if the node is already disabled (e.g. left that way from
+        // a previous session) and the in-memory flag defaults to "enabled",
+        // the very first reconcile could conclude no change is needed and
+        // silently skip a write that's actually required.
+        worker.execute {
+            navDisabled = readNavDisabledFromKernel() ?: false
+            reconcileNav()
+        }
 
         val fx = AudioFx(this, p)
         audioFx = fx
         fx.refresh()
+    }
+
+    /** Reads the current 0dbutton value for the synaptics_dsx_2 device, if found. */
+    private fun readNavDisabledFromKernel(): Boolean? {
+        val script =
+            "for d in /sys/class/input/event*; do " +
+                "if [ \"\$(cat \"\$d/device/name\" 2>/dev/null)\" = synaptics_dsx_2 ]; then " +
+                "cat \"\$d/device/0dbutton\"; " +
+                "fi; " +
+                "done"
+        return try {
+            val result = RootShell.run(script)
+            when (result.outString.trim()) {
+                "0" -> true  // 0 = buttons disabled
+                "1" -> false // 1 = buttons enabled
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun navLockEnabled() = prefs?.getBoolean(KEY_NAV_LOCK, true) ?: true
