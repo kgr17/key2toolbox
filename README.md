@@ -1,31 +1,43 @@
 # Key2 Toolbox
 
 A root app for the BlackBerry Key2 (FolkPatch/APatch, LineageOS 22.2, 4.19
-kernel) that bundles eight previously-separate tweaks into one toggle UI:
+kernel) that bundles a set of previously-separate tweaks into one UI,
+organised into three bottom-bar sections:
 
+**Info** - device status landing page: build (model, Android, LineageOS,
+security patch, kernel), battery (level, health, temperature, voltage,
+technology, capacity-health % and charge cycles from sysfs), and root +
+accessibility-service status.
+
+**Keyboard**
 - **Convenience key → Ctrl** remap (`stmpe.kl` key 110)
-- **ZRAM** compression algorithm + size (Off / 2GB / 3GB / 4GB)
 - **Adaptive keyboard backlight** daemon
-- **Persistent wireless ADB** on a user-chosen static port
-- **Double-Tap to Wake** (DT2W)
 - **Keyboard Nav Lock** - stops accidental Back/Home/Recents while typing
 - **Lockscreen PIN on Keyboard** - type your PIN on the physical keyboard
-- **Audio FX** - system-wide EQ, bass boost, and loudness, auto-profiled by output
+- **Per-App Keyboard Block** - in chosen apps, route physical keys straight
+  to the app (for games) by switching to a passthrough IME
 
-Each module lives on its own screen, navigated from a home menu. The first
-five are stateless: they fire root commands on demand and persist by
-installing a script to `/data/adb/service.d/`. The last three (ported from
-[nozerorma/key2-tweaks](https://github.com/nozerorma/key2-tweaks)) are
-different in kind - they depend on a long-lived `Key2AccessibilityService`
-that watches for IME visibility, intercepts physical key events, and tracks
-audio sessions, since none of that is observable from a one-shot root
-command. Settings for these three are stored in their own SharedPreferences
-file (`key2tweaks`) rather than going through `AssetInstaller`.
+**System**
+- **ZRAM** compression algorithm + size (Off / 2GB / 3GB / 4GB)
+- **Persistent wireless ADB** on a user-chosen static port
+- **Double-Tap to Wake** (DT2W)
+- **5GHz Hotspot Workaround** - force the WiFi region to US so 5GHz SoftAP
+  works (EU regdomains expose no 5GHz AP channels on this build)
 
-The three accessibility-service modules only work once **Key2 Toolbox** is
-enabled under Settings → Accessibility - each of their screens shows a
-banner with a direct link there if it isn't. Reinstalling the app resets
-this, so it needs re-enabling after every fresh install.
+The UI follows Material You (Monet), in light or dark to match the system.
+Most modules are stateless: they fire root commands on demand and persist by
+installing a script to `/data/adb/service.d/`. A few (Nav Lock, PIN, Per-App
+Keyboard Block - the last two ported from
+[nozerorma/key2-tweaks](https://github.com/nozerorma/key2-tweaks)) instead
+depend on a long-lived `Key2AccessibilityService` that watches IME/window
+state and intercepts physical key events, since none of that is observable
+from a one-shot root command. Their settings live in a `key2tweaks`
+SharedPreferences file rather than going through `AssetInstaller`.
+
+The accessibility-service modules only work once **Key2 Toolbox** is enabled
+under Settings → Accessibility - each of their screens shows a banner with a
+direct link there if it isn't. Reinstalling the app resets this, so it needs
+re-enabling after every fresh install.
 
 ## Signing with your existing keystore
 
@@ -133,28 +145,31 @@ Delete/Backspace deletes. Button lookup tries known SystemUI view IDs first
 recursive node search by visible text or content description if those IDs
 don't match on this build.
 
-### Audio FX (`AudioFx`, hosted inside `Key2AccessibilityService`)
-Ported from nozerorma/key2-tweaks. System-wide `Equalizer` + `BassBoost` +
-`LoudnessEnhancer` chain, no root required for the EQ itself. Effects are
-attached per audio session (tracked via the
-`OPEN/CLOSE_AUDIO_EFFECT_CONTROL_SESSION` broadcasts, plus a session-0
-fallback) rather than only the global mix, since per-session attachment is
-what actually processes playback on this Qualcomm ROM. Four tuning profiles
-- `spk` (speaker), `wired`, `bt` (Bluetooth A2DP), `usb` - auto-selected by
-the currently active output (`AudioFx.profileFor`, checked via
-`AudioDeviceCallback` so it re-evaluates whenever the output changes) with
-separate recommended-default EQ curves, bass, and loudness per profile.
-Hosted inside the accessibility service rather than its own service so it
-gets a long-lived process without a separate foreground-service
-notification.
+### Per-App Keyboard Block (`Key2AccessibilityService` + `Key2PassthroughIme`)
+In a chosen set of apps, physical key presses are routed straight to the app
+instead of going through the keyboard. On the Key2 the BlackBerry IME
+intercepts and translates hardware keys (it even ignores the system keymap -
+`stmpe.kcm` maps the currency key to `$`, but the IME still emits `4`), which
+interferes with games. The service tracks the foreground app
+(`foregroundAppPackage()` from the active application window) and, when a
+selected package is in front, switches the default IME to a bundled
+do-nothing input method (`Key2PassthroughIme`, which inflates no view and
+consumes no keys) via root `ime enable`/`ime set`, saving the previous IME to
+restore on the way out. The picked packages are a `StringSet` in the
+`key2tweaks` prefs; the app list uses a `<queries>` launcher intent so it can
+enumerate launchable apps on Android 11+.
 
-**LineageOS AudioFX conflict**: two effect engines fighting over the same
-audio sessions cancel or muddy each other, so `org.lineageos.audiofx` needs
-to be disabled for this module's EQ to actually take effect cleanly. The
-screen shows its install/enabled status and a button to toggle it via
-`pm disable-user --user 0` / `pm enable`, run through `RootShell` - this is
-the only part of Audio FX that needs root. Turning the master Audio FX
-toggle on also auto-disables LineageOS AudioFX if it's currently enabled.
+### 5GHz Hotspot Workaround (`WifiRegdomainController`)
+On this build every EU WiFi regdomain exposes **zero** 5GHz SoftAP channels
+(`SupportedChannelListIn5g[]`), so 5GHz hotspot is greyed out / fails with
+`NO_CHANNEL`; only the US regdomain has them. This forces the WiFi country
+code to US via `cmd wifi force-country-code enabled US`, applied live and
+persisted with `assets/force_us_wifi.sh` (which re-applies it after each boot
+once the WiFi service is up, since the override resets on reboot). Trade-off,
+surfaced on the screen: it also applies to WiFi as a client (you lose 2.4GHz
+ch 12-13 and EU-only 5GHz channels) and enables the upper US channels
+(149-165) that aren't EU-licensed. Also note SoftAP only starts with **WPA2**
+on this build - WPA3/SAE fails with `UNSUPPORTED_CONFIGURATION`.
 
 ## ⚠ Known risk: writing to `/data/adb/service.d/` from the app
 
@@ -194,16 +209,15 @@ you'll see immediately if a persist operation silently failed.
   `Dt2wController` (persist via `AssetInstaller`, live-apply via
   `RootShell.run`).
 - For features that need to observe ongoing state (window/IME visibility,
-  key events, audio sessions) rather than just fire a command, that
-  observation has to happen inside `Key2AccessibilityService` - root has no
-  API for "tell me when X happens," only for executing commands. Add the
-  logic there (or as a class it hosts, like `AudioFx`), store settings as
-  SharedPreferences booleans/ints in the `key2tweaks` prefs file, and write
-  the corresponding screen to read/write those same keys directly rather
-  than going through `AssetInstaller`.
+  key events) rather than just fire a command, that observation has to
+  happen inside `Key2AccessibilityService` - root has no API for "tell me
+  when X happens," only for executing commands. Add the logic there, store
+  settings as SharedPreferences booleans/ints in the `key2tweaks` prefs file,
+  and write the corresponding screen to read/write those same keys directly
+  rather than going through `AssetInstaller`.
 - Either way, add a corresponding screen in `ui/` (following e.g.
   `CtrlKeyScreen.kt` for the simple case or `NavLockScreen.kt` /
-  `AudioFxScreen.kt` for the prefs-based case, all built on the shared
-  `ScreenScaffold`), and wire it into the navigation host and home menu in
+  `ImeBlockScreen.kt` for the prefs-based case, all built on the shared
+  `ScreenScaffold`), and wire it into `DetailHost` plus the section lists in
   `ui/HomeScreen.kt` and `ui/Screen.kt`.
 - Drop any new boot scripts in `app/src/main/assets/`.

@@ -45,6 +45,19 @@ object ZramController {
             .find(content)?.groupValues?.get(1)
     }
 
+    /** Inspects the persisted script (if any) to determine which swappiness it targets. */
+    fun persistedSwappiness(): Int? {
+        val content = AssetInstaller.readFile(TARGET)
+        return Regex("""echo\s+(\d+)\s*>\s*/proc/sys/vm/swappiness""")
+            .find(content)?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    /** Current live swappiness, or null if it cannot be read. */
+    fun currentLiveSwappiness(): Int? {
+        val out = RootShell.run("cat /proc/sys/vm/swappiness 2>/dev/null").outString.trim()
+        return out.toIntOrNull()
+    }
+
     /** Current live zram0 disksize in bytes, or null if zram0 isn't active/present. */
     fun currentLiveSizeBytes(): Long? {
         val out = RootShell.run("cat /sys/block/zram0/disksize 2>/dev/null").outString.trim()
@@ -71,17 +84,18 @@ object ZramController {
     }
 
     /**
-     * Updates the persisted script for [size]/[algorithm]. If [applyLive] is
-     * true, also applies the change immediately (swapoff/reset/algo/resize/swapon).
-     * [algorithm] is ignored when [size] is OFF.
+     * Updates the persisted script for [size]/[algorithm]/[swappiness]. If [applyLive] is
+     * true, also applies the change immediately (swapoff/reset/algo/resize/swapon/swappiness).
+     * [algorithm] and [swappiness] are ignored when [size] is OFF.
      */
-    fun setSize(context: Context, size: Size, algorithm: String, applyLive: Boolean): ShellResult {
+    fun setSize(context: Context, size: Size, algorithm: String, swappiness: Int, applyLive: Boolean): ShellResult {
         val persistResult = if (size == Size.OFF) {
             AssetInstaller.removeFile(TARGET)
         } else {
             AssetInstaller.installFromAsset(context, TEMPLATE_ASSET, TARGET) { raw ->
                 raw.replace("__SIZE_MB__", size.mb.toString())
                     .replace("__ALGO__", algorithm)
+                    .replace("__SWAPPINESS__", swappiness.toString())
             }
         }
 
@@ -98,9 +112,13 @@ object ZramController {
                         "echo $algorithm > /sys/block/zram0/comp_algorithm; " +
                         "echo ${size.mb}m > /sys/block/zram0/disksize && " +
                         "mkswap /dev/block/zram0 && " +
-                        "swapon /dev/block/zram0"
+                        "swapon /dev/block/zram0 && " +
+                        "echo $swappiness > /proc/sys/vm/swappiness"
                 )
             }
+        } else if (size != Size.OFF) {
+            // Apply swappiness live anyway as it's safe (unlike resetting ZRAM).
+            RootShell.run("echo $swappiness > /proc/sys/vm/swappiness")
         }
 
         return persistResult

@@ -6,3 +6,4 @@ echo __ALGO__ > /sys/block/zram0/comp_algorithm
 echo __SIZE_MB__m > /sys/block/zram0/disksize
 mkswap /dev/block/zram0
 swapon /dev/block/zram0
+echo __SWAPPINESS__ > /proc/sys/vm/swappiness

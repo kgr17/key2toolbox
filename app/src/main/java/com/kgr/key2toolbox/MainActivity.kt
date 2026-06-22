@@ -4,15 +4,17 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.lifecycleScope
 import com.kgr.key2toolbox.core.RootShell
@@ -21,34 +23,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Forces every background/surface token to pure black while leaving
- * accent tokens (primary/secondary/tertiary etc.) untouched, so a
- * dynamic (system wallpaper-derived) scheme keeps its accent color.
+ * Full Material You (Monet) theming: on Android 12+ the palette is derived from
+ * the system wallpaper, following the system light/dark setting. Older versions
+ * fall back to the stock Material 3 light/dark baseline schemes.
  */
-private fun ColorScheme.toPureBlack(): ColorScheme = copy(
-    background = Color.Black,
-    onBackground = Color.White,
-    surface = Color.Black,
-    onSurface = Color.White,
-    surfaceVariant = Color.Black,
-    surfaceContainer = Color.Black,
-    surfaceContainerLow = Color.Black,
-    surfaceContainerHigh = Color.Black,
-    surfaceContainerHighest = Color.Black,
-    surfaceContainerLowest = Color.Black,
-    surfaceTint = Color.Black
-)
-
 @Composable
-private fun pureBlackColorScheme(): ColorScheme {
+private fun appColorScheme(): ColorScheme {
     val context = LocalContext.current
-    val base = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        // Pulls accent colors from the system wallpaper/theme (Material You).
-        dynamicDarkColorScheme(context)
+    val dark = isSystemInDarkTheme()
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     } else {
-        darkColorScheme()
+        if (dark) darkColorScheme() else lightColorScheme()
     }
-    return base.toPureBlack()
 }
 
 class MainActivity : ComponentActivity() {
@@ -69,7 +56,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme(colorScheme = pureBlackColorScheme()) {
+            MaterialTheme(colorScheme = appColorScheme()) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background

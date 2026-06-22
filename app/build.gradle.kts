@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.kgr.key2toolbox"
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.kgr.key2toolbox"
         minSdk = 28
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 1
         versionName = "4.1-beta4"
     }
@@ -73,6 +73,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
 
     // Root shell access (https://github.com/topjohnwu/libsu)
     implementation("com.github.topjohnwu.libsu:core:5.2.2")

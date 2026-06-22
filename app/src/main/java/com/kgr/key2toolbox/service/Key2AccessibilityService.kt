@@ -3,12 +3,19 @@ package com.kgr.key2toolbox.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import androidx.core.content.ContextCompat
 import com.kgr.key2toolbox.core.AssetInstaller
 import com.kgr.key2toolbox.core.RootShell
 import java.util.Locale
@@ -48,6 +55,16 @@ class Key2AccessibilityService : AccessibilityService() {
         const val KEY_NAV_GESTURE = "nav_gesture_mode" // false=disable buttons, true=double-tap gate (Back)
         const val KEY_NAV_ALWAYS_OFF = "nav_always_off" // disable nav buttons permanently
         const val KEY_PIN_INPUT = "pin_input_enabled"
+        const val KEY_IME_BLOCK = "ime_block_enabled"     // bypass IME in selected apps
+        const val KEY_IME_BLOCK_APPS = "ime_block_apps"   // StringSet of package names
+        const val KEY_IME_SAVED = "ime_block_saved_ime"   // IME to restore when leaving a blocked app
+
+        // Our do-nothing IME: while it's active, physical key presses go straight
+        // to the app instead of being intercepted/translated by the normal keyboard.
+        const val PASSTHRU_IME = "com.kgr.key2toolbox/.service.Key2PassthroughIme"
+        // Key2 stock keyboard - the default to fall back to if we have nothing saved.
+        private const val DEFAULT_IME_FALLBACK =
+            "com.blackberry.keyboard/com.blackberry.inputmethod.core.BlackBerryIME"
 
         private const val LONG_PRESS_MS = 350L
         private const val DOUBLE_TAP_MS = 300L
@@ -59,9 +76,12 @@ class Key2AccessibilityService : AccessibilityService() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     @Volatile private var navDisabled = false // last state pushed to kernel
     @Volatile private var imeActive = false   // keyboard currently showing
+    @Volatile private var imeBlockApplied = false // last show_ime value we pushed (true = suppressed)
+    @Volatile private var foregroundPkg: String? = null // last seen foreground app package
     private val lastNavTap = HashMap<Int, Long>() // keycode -> last short-tap time
     private var prefs: SharedPreferences? = null
-    private var audioFx: AudioFx? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
@@ -72,10 +92,8 @@ class Key2AccessibilityService : AccessibilityService() {
             val alwaysOffNow = sp.getBoolean(KEY_NAV_ALWAYS_OFF, false)
             worker.execute { persistAlwaysOff(alwaysOffNow) }
         }
-        val fx = audioFx
-        if (fx != null && (key == AudioFx.KEY_ENABLED || key.startsWith("eq_") ||
-                    key.startsWith("bass_") || key.startsWith("loud_"))) {
-            fx.refresh()
+        if (key == KEY_IME_BLOCK || key == KEY_IME_BLOCK_APPS) {
+            reconcileImeBlock()
         }
     }
 
@@ -105,23 +123,43 @@ class Key2AccessibilityService : AccessibilityService() {
             serviceInfo = info
         }
 
-        // Seed navDisabled from the real kernel state rather than assuming
-        // false - if the node is already disabled (e.g. left that way from
-        // a previous session) and the in-memory flag defaults to "enabled",
-        // the very first reconcile could conclude no change is needed and
-        // silently skip a write that's actually required.
+        // Seed navDisabled from the real kernel state and reconcile.
+        forceReconcile()
         worker.execute {
-            navDisabled = readNavDisabledFromKernel() ?: false
-            reconcileNav()
             // Make sure the boot script matches the current pref, in case
             // it was enabled before this persistence logic existed, or the
             // install/removal previously failed silently.
             persistAlwaysOff(alwaysOff())
+
+            // Seed imeBlockApplied from the live default IME, so a mid-session
+            // restart while the passthrough IME is active still gets reconciled
+            // (and restored) once the foreground app is known.
+            val curIme = RootShell.run("settings get secure default_input_method")
+                .outString.trim()
+            imeBlockApplied = (curIme == PASSTHRU_IME)
         }
 
-        val fx = AudioFx(this, p)
-        audioFx = fx
-        fx.refresh()
+        val rx = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                Log.d("Key2Toolbox", "Screen state changed: ${intent?.action}")
+                forceReconcile()
+                mainHandler.postDelayed({ forceReconcile() }, 300)
+                mainHandler.postDelayed({ forceReconcile() }, 600)
+                mainHandler.postDelayed({ forceReconcile() }, 1200)
+                mainHandler.postDelayed({ forceReconcile() }, 2500)
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        try {
+            ContextCompat.registerReceiver(this, rx, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            screenReceiver = rx
+            Log.d("Key2Toolbox", "Successfully registered screenReceiver")
+        } catch (e: Exception) {
+            Log.e("Key2Toolbox", "Failed to register screenReceiver", e)
+        }
     }
 
     /** Reads the current 0dbutton value for the synaptics_dsx_2 device, if found. */
@@ -148,12 +186,81 @@ class Key2AccessibilityService : AccessibilityService() {
     private fun gestureMode() = prefs?.getBoolean(KEY_NAV_GESTURE, false) ?: false
     private fun alwaysOff() = prefs?.getBoolean(KEY_NAV_ALWAYS_OFF, false) ?: false
     private fun pinInputEnabled() = prefs?.getBoolean(KEY_PIN_INPUT, true) ?: true
+    private fun imeBlockEnabled() = prefs?.getBoolean(KEY_IME_BLOCK, false) ?: false
+    private fun imeBlockApps(): Set<String> =
+        prefs?.getStringSet(KEY_IME_BLOCK_APPS, emptySet()) ?: emptySet()
 
     // ---------------------------------------------------------------- Nav Lock
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         imeActive = isImeVisible()
         reconcileNav()
+
+        val pkg = foregroundAppPackage()
+        if (pkg != null && pkg != foregroundPkg) {
+            foregroundPkg = pkg
+            reconcileImeBlock()
+        }
+    }
+
+    // --------------------------------------------------------------- IME Block
+
+    /**
+     * The package of the focused/active TYPE_APPLICATION window - i.e. the app
+     * behind any keyboard. Reading the application window (not the event source)
+     * keeps this stable while the IME window comes and goes.
+     */
+    private fun foregroundAppPackage(): String? {
+        val windowList: List<AccessibilityWindowInfo> = try {
+            windows ?: return null
+        } catch (_: Exception) {
+            return null
+        }
+        for (w in windowList) {
+            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && (w.isActive || w.isFocused)) {
+                val root = w.root ?: continue
+                val pkg = root.packageName?.toString()
+                root.recycle()
+                if (pkg != null) return pkg
+            }
+        }
+        return null
+    }
+
+    /** Switch to / from the passthrough IME based on the current foreground app. */
+    private fun reconcileImeBlock() {
+        val desired = imeBlockEnabled() && foregroundPkg?.let { it in imeBlockApps() } == true
+        if (desired == imeBlockApplied) return
+        imeBlockApplied = desired
+        worker.execute { applyImeBlock(desired) }
+    }
+
+    /**
+     * Bypass the keyboard for selected apps by switching the default input method
+     * to a do-nothing passthrough IME, so physical key presses reach the app raw
+     * instead of being intercepted/translated by the normal keyboard (e.g. the
+     * BlackBerry IME). Restores the previously active IME on the way out.
+     */
+    private fun applyImeBlock(bypass: Boolean) {
+        try {
+            val current = RootShell.run("settings get secure default_input_method")
+                .outString.trim()
+            if (bypass) {
+                if (current != PASSTHRU_IME) {
+                    if (current.isNotEmpty() && current != "null") {
+                        prefs?.edit()?.putString(KEY_IME_SAVED, current)?.apply()
+                    }
+                    RootShell.run("ime enable $PASSTHRU_IME ; ime set $PASSTHRU_IME")
+                }
+            } else if (current == PASSTHRU_IME) {
+                val saved = prefs?.getString(KEY_IME_SAVED, null)
+                    ?.takeIf { it.isNotEmpty() && it != "null" } ?: DEFAULT_IME_FALLBACK
+                RootShell.run("ime set $saved")
+            }
+            Log.d("Key2Toolbox", "applyImeBlock: bypass=$bypass, was=$current")
+        } catch (e: Exception) {
+            Log.e("Key2Toolbox", "applyImeBlock failed for bypass=$bypass", e)
+        }
     }
 
     /** Compute and apply the desired capacitive-button state from current settings. */
@@ -163,7 +270,22 @@ class Key2AccessibilityService : AccessibilityService() {
             !navLockEnabled() || gestureMode() -> false   // buttons stay live (gesture mode gates in onKeyEvent)
             else -> imeActive                             // disable-while-typing mode
         }
+        Log.d("Key2Toolbox", "reconcileNav: desired=$desired, currentCache=$navDisabled, alwaysOff=${alwaysOff()}, imeActive=$imeActive")
         if (desired != navDisabled) applyNavDisabled(desired)
+    }
+
+    private fun forceReconcile() {
+        worker.execute {
+            val desired = when {
+                alwaysOff() -> true                          // permanently disabled
+                !navLockEnabled() || gestureMode() -> false   // buttons stay live (gesture mode gates in onKeyEvent)
+                else -> imeActive                             // disable-while-typing mode
+            }
+            Log.d("Key2Toolbox", "forceReconcile: desired=$desired, alwaysOff=${alwaysOff()}, imeActive=$imeActive")
+            // Always apply directly to the hardware to override any driver/kernel-level resets
+            navDisabled = desired
+            runRoot(if (desired) "0" else "1")
+        }
     }
 
     private fun isImeVisible(): Boolean {
@@ -176,26 +298,40 @@ class Key2AccessibilityService : AccessibilityService() {
     }
 
     private fun applyNavDisabled(disabled: Boolean) {
+        Log.d("Key2Toolbox", "applyNavDisabled: disabled=$disabled")
         navDisabled = disabled
         worker.execute { runRoot(if (disabled) "0" else "1") }
     }
 
     private fun writeNodeBlocking(enabled: Boolean) {
+        Log.d("Key2Toolbox", "writeNodeBlocking: enabled=$enabled")
         navDisabled = !enabled
         runRoot(if (enabled) "1" else "0")
     }
 
     private fun runRoot(value: String) {
-        val script =
+        val script = if (value == "0") {
+            // Write 1 then 0 to bypass driver-level caching if the hardware was reset
             "for d in /sys/class/input/event*; do " +
                 "if [ \"\$(cat \"\$d/device/name\" 2>/dev/null)\" = synaptics_dsx_2 ]; then " +
-                "echo $value > \"\$d/device/0dbutton\"; " +
+                "echo 1 > \"\$d/device/0dbutton\" 2>/dev/null; " +
+                "echo 0 > \"\$d/device/0dbutton\" 2>/dev/null; " +
                 "fi; " +
                 "done"
+        } else {
+            // Write 0 then 1 to ensure it enables
+            "for d in /sys/class/input/event*; do " +
+                "if [ \"\$(cat \"\$d/device/name\" 2>/dev/null)\" = synaptics_dsx_2 ]; then " +
+                "echo 0 > \"\$d/device/0dbutton\" 2>/dev/null; " +
+                "echo 1 > \"\$d/device/0dbutton\" 2>/dev/null; " +
+                "fi; " +
+                "done"
+        }
         try {
-            RootShell.run(script)
-        } catch (_: Exception) {
-            // Root denied or su missing: leave buttons as-is.
+            val res = RootShell.run(script)
+            Log.d("Key2Toolbox", "runRoot: value=$value, success=${res.success}, out=${res.outString}")
+        } catch (e: Exception) {
+            Log.e("Key2Toolbox", "runRoot failed for value=$value", e)
         }
     }
 
@@ -393,13 +529,26 @@ class Key2AccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         writeNodeBlocking(true) // never leave nav buttons dead
+        restoreImeBlock()       // never leave the soft keyboard globally suppressed
         return super.onUnbind(intent)
+    }
+
+    /** Re-enable the soft keyboard if we'd suppressed it, run synchronously on teardown. */
+    private fun restoreImeBlock() {
+        if (!imeBlockApplied) return
+        imeBlockApplied = false
+        applyImeBlock(false)
     }
 
     override fun onDestroy() {
         writeNodeBlocking(true)
-        audioFx?.shutdown()
+        restoreImeBlock()
         prefs?.unregisterOnSharedPreferenceChangeListener(prefListener)
+        screenReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (_: Exception) {}
+        }
         worker.shutdown()
         super.onDestroy()
     }
