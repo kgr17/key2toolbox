@@ -9,6 +9,9 @@
         </intent>
     </queries>
 
+    <!-- Required by PlayStoreTagger to enumerate all installed packages. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

@@ -12,14 +12,9 @@ android {
         minSdk = 28
         targetSdk = 34
         versionCode = 1
-        versionName = "4.1-beta4"
+        versionName = "4.2-beta1"
     }
 
-    // To produce a release build signed with your existing keystore, fill these
-    // in (or supply them via gradle.properties / environment variables instead
-    // of hardcoding the password here) and reference signingConfigs["release"]
-    // from the release buildType below.
-    //
     // signingConfigs {
     //     create("release") {
     //         storeFile = file("/path/to/kgr_signing.keystore")
@@ -68,6 +63,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
 
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
     implementation("androidx.compose.ui:ui")

@@ -26,14 +26,26 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
-/**
- * Top-level navigation: a bottom bar with Info / Keyboard / System sections.
- * Info is the landing page (device status); the other two list their modules,
- * and tapping one opens its detail screen.
- */
+enum class AppTab(val label: String) { Info("Info"), Keyboard("Keyboard"), System("System") }
+
+val keyboardScreens = listOf(
+    Screen.CtrlKey,
+    Screen.KbdLight,
+    Screen.NavLock,
+    Screen.PinKeyboard,
+    Screen.ImeBlock
+)
+
+val systemScreens = listOf(
+    Screen.Zram,
+    Screen.WirelessAdb,
+    Screen.Dt2w,
+    Screen.Wifi5g,
+    Screen.PlayStoreTagger
+)
+
 @Composable
 fun HomeScreen() {
     var tab by remember { mutableStateOf(AppTab.Info) }
@@ -78,19 +90,20 @@ fun HomeScreen() {
     }
 }
 
-/** Routes a [Screen] to its detail composable. */
 @Composable
 private fun DetailHost(screen: Screen, onBack: () -> Unit) {
     when (screen) {
         Screen.CtrlKey -> CtrlKeyScreen(onBack)
-        Screen.Zram -> ZramScreen(onBack)
         Screen.KbdLight -> KbdLightScreen(onBack)
-        Screen.WirelessAdb -> WirelessAdbScreen(onBack)
-        Screen.Dt2w -> Dt2wScreen(onBack)
         Screen.NavLock -> NavLockScreen(onBack)
         Screen.PinKeyboard -> PinKeyboardScreen(onBack)
         Screen.ImeBlock -> ImeBlockScreen(onBack)
+        Screen.Zram -> ZramScreen(onBack)
+        Screen.WirelessAdb -> WirelessAdbScreen(onBack)
+        Screen.Dt2w -> Dt2wScreen(onBack)
         Screen.Wifi5g -> Wifi5gScreen(onBack)
+        Screen.PlayStoreTagger -> PlayStoreTaggerScreen(onBack)
+        Screen.Home -> Unit
     }
 }
 
